@@ -7,15 +7,12 @@ use std::{error, fmt};
 pub enum Error {
     /// Error while using snow API
     Noise(String),
-    /// Error while using entity map
-    EntityMap(String),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             Error::Noise(ref e) => write!(f, "Noise Error: {}", e),
-            Error::EntityMap(ref e) => write!(f, "Entity Map Error: {}", e),
         }
     }
 }
