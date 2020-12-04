@@ -6,21 +6,29 @@
 
 use crate::error::Error;
 use snow::{resolvers::SodiumResolver, Builder, HandshakeState, TransportState};
+use std::convert::TryInto;
 
 /// The size of a key, either public or private, on the Curve25519
 pub const KEY_SIZE: usize = 32;
 /// Size of the poly1305 MAC
 pub const MAC_SIZE: usize = 16;
-
+/// Max message size pecified by Noise Protocol Framework
 pub const NOISE_MESSAGE_MAX_SIZE: usize = 65535;
-
-/// We use a 64bits integer for the size
+/// A 64bit integer is used for message length prefix
 pub const LENGTH_PREFIX_SIZE: usize = 8;
 /// Message header length plus its MAC
 pub const NOISE_MESSAGE_HEADER_SIZE: usize = MAC_SIZE + LENGTH_PREFIX_SIZE;
 /// Size of padded messages; limited by Noise Protocol Framework
 pub const NOISE_PADDED_MESSAGE_SIZE: usize =
     NOISE_MESSAGE_MAX_SIZE - MAC_SIZE - NOISE_MESSAGE_HEADER_SIZE;
+/// e
+pub const KX_MSG_1_SIZE: usize = KEY_SIZE;
+/// e, ee, se, s, es
+pub const KX_MSG_2_SIZE: usize = 2 * KEY_SIZE + 2 * MAC_SIZE;
+/// e, es, ss
+pub const KK_MSG_1_SIZE: usize = KEY_SIZE + MAC_SIZE;
+/// e, ee, se
+pub const KK_MSG_2_SIZE: usize = KEY_SIZE + MAC_SIZE;
 
 /// A static Noise public key
 pub struct NoisePubKey(pub [u8; KEY_SIZE]);
@@ -30,10 +38,10 @@ pub struct NoisePrivKey(pub [u8; KEY_SIZE]);
 
 /// First round of the KX handshake
 pub struct KXHandshakeActOne {
-    pub state: HandshakeState,
+    state: HandshakeState,
 }
 
-pub struct KXMessageActOne(pub Vec<u8>);
+pub struct KXMessageActOne(pub [u8; KX_MSG_1_SIZE]);
 
 impl KXHandshakeActOne {
     /// Start the first act of the handshake as an initiator (sharing e)
@@ -54,7 +62,9 @@ impl KXHandshakeActOne {
             .map_err(|e| Error::Noise(format!("Failed to build state for initiator: {:?}", e)))?;
 
         // Write the first message
-        let mut msg = vec![0u8; NOISE_MESSAGE_MAX_SIZE];
+        // FIXME: Why does the size here need to be larger than what is written?
+        // The write fails if msg.len() == KX_MSG_1_size but then len == KX_MSG_1_size
+        let mut msg = vec![0u8; KX_MSG_1_SIZE + MAC_SIZE];
         let len = state
             // FIXME: should we write something like b"revault_0" ?
             .write_message(&[], &mut msg)
@@ -64,9 +74,11 @@ impl KXHandshakeActOne {
                     e
                 ))
             })?;
-        msg.truncate(len);
 
-        Ok((KXHandshakeActOne { state }, KXMessageActOne(msg)))
+        Ok((
+            KXHandshakeActOne { state },
+            KXMessageActOne(msg[..len].try_into().unwrap()),
+        ))
     }
 
     /// Start the first act of the handshake as a responder (reading e and doing wizardry with it)
@@ -90,7 +102,7 @@ impl KXHandshakeActOne {
             .map_err(|e| Error::Noise(format!("Failed to build state for responder: {:?}", e)))?;
 
         // In handshake mode we don't actually care about the message
-        let mut _m = vec![0u8; NOISE_MESSAGE_MAX_SIZE];
+        let mut _m = [0u8; KX_MSG_1_SIZE];
         state.read_message(&message.0, &mut _m).map_err(|e| {
             Error::Noise(format!(
                 "Failed to read first message for responder: {:?}",
@@ -104,10 +116,10 @@ impl KXHandshakeActOne {
 
 /// Final round of the KX handshake
 pub struct KXHandshakeActTwo {
-    pub state: HandshakeState,
+    state: HandshakeState,
 }
 
-pub struct KXMessageActTwo(pub Vec<u8>);
+pub struct KXMessageActTwo(pub [u8; KX_MSG_2_SIZE]);
 
 impl KXHandshakeActTwo {
     /// Start the second act of the handshake as an initiator (read e, ee, se, s, es)
@@ -115,7 +127,7 @@ impl KXHandshakeActTwo {
         mut handshake: KXHandshakeActOne,
         message: &KXMessageActTwo,
     ) -> Result<KXHandshakeActTwo, Error> {
-        let mut _m = vec![0u8; NOISE_MESSAGE_MAX_SIZE];
+        let mut _m = [0u8; KX_MSG_2_SIZE];
         handshake
             .state
             .read_message(&message.0, &mut _m)
@@ -132,11 +144,10 @@ impl KXHandshakeActTwo {
     pub fn responder(
         mut handshake: KXHandshakeActOne,
     ) -> Result<(KXHandshakeActTwo, KXMessageActTwo), Error> {
-        let mut msg = vec![0u8; NOISE_MESSAGE_MAX_SIZE];
-        let len = handshake.state.write_message(&[], &mut msg).map_err(|e| {
+        let mut msg = [0u8; KX_MSG_2_SIZE];
+        let _len = handshake.state.write_message(&[], &mut msg).map_err(|e| {
             Error::Noise(format!("Responder failed to write second message: {:?}", e))
         })?;
-        msg.truncate(len);
 
         Ok((
             KXHandshakeActTwo {
@@ -148,6 +159,7 @@ impl KXHandshakeActTwo {
 }
 
 /// A wrapper over Snow's transport state for a KX Noise communication channel.
+#[derive(Debug)]
 pub struct KXChannel {
     transport_state: TransportState,
 }
@@ -165,10 +177,10 @@ impl KXChannel {
 
 /// First round of the handshake
 pub struct KKHandshakeActOne {
-    pub state: HandshakeState,
+    state: HandshakeState,
 }
 
-pub struct KKMessageActOne(pub Vec<u8>);
+pub struct KKMessageActOne(pub [u8; KK_MSG_1_SIZE]);
 
 impl KKHandshakeActOne {
     /// Start the first act of the handshake as an initiator (sharing e, es, ss)
@@ -191,8 +203,8 @@ impl KKHandshakeActOne {
             .map_err(|e| Error::Noise(format!("Failed to build state for initiator: {:?}", e)))?;
 
         // Write the first message
-        let mut msg = vec![0u8; NOISE_MESSAGE_MAX_SIZE];
-        let len = state
+        let mut msg = [0u8; KK_MSG_1_SIZE];
+        let _len = state
             // FIXME: should we write something like b"revault_0" ?
             .write_message(&[], &mut msg)
             .map_err(|e| {
@@ -201,7 +213,6 @@ impl KKHandshakeActOne {
                     e
                 ))
             })?;
-        msg.truncate(len);
 
         Ok((KKHandshakeActOne { state }, KKMessageActOne(msg)))
     }
@@ -227,7 +238,7 @@ impl KKHandshakeActOne {
             .map_err(|e| Error::Noise(format!("Failed to build state for responder: {:?}", e)))?;
 
         // In handshake mode we don't actually care about the message
-        let mut _m = vec![0u8; NOISE_MESSAGE_MAX_SIZE];
+        let mut _m = [0u8; KK_MSG_1_SIZE];
         state.read_message(&message.0, &mut _m).map_err(|e| {
             Error::Noise(format!(
                 "Failed to read first message for responder: {:?}",
@@ -242,11 +253,11 @@ impl KKHandshakeActOne {
 /// Final round of the KK handshake
 pub struct KKHandshakeActTwo {
     /// Inner snow Noise KK handshake state
-    pub state: HandshakeState,
+    state: HandshakeState,
 }
 
 /// Content of the message from the final round of the handshake
-pub struct KKMessageActTwo(pub Vec<u8>);
+pub struct KKMessageActTwo(pub [u8; KK_MSG_2_SIZE]);
 
 impl KKHandshakeActTwo {
     /// Start the second act of the handshake as a responder (read e, ee, se)
@@ -255,7 +266,7 @@ impl KKHandshakeActTwo {
         message: &KKMessageActTwo,
     ) -> Result<KKHandshakeActTwo, Error> {
         // In handshake mode we don't actually care about the message
-        let mut _m = vec![0u8; NOISE_MESSAGE_MAX_SIZE];
+        let mut _m = [0u8; KK_MSG_2_SIZE];
         handshake
             .state
             .read_message(&message.0, &mut _m)
@@ -272,11 +283,10 @@ impl KKHandshakeActTwo {
     pub fn responder(
         mut handshake: KKHandshakeActOne,
     ) -> Result<(KKHandshakeActTwo, KKMessageActTwo), Error> {
-        let mut msg = vec![0u8; NOISE_MESSAGE_MAX_SIZE];
-        let len = handshake.state.write_message(&[], &mut msg).map_err(|e| {
+        let mut msg = [0u8; KK_MSG_2_SIZE];
+        let _len = handshake.state.write_message(&[], &mut msg).map_err(|e| {
             Error::Noise(format!("Responder failed to write second message: {:?}", e))
         })?;
-        msg.truncate(len);
 
         Ok((
             KKHandshakeActTwo {
@@ -288,6 +298,7 @@ impl KKHandshakeActTwo {
 }
 
 /// A wrapper over Snow's transport state for a KK Noise communication channel.
+#[derive(Debug)]
 pub struct KKChannel {
     transport_state: TransportState,
 }
@@ -324,7 +335,7 @@ impl NoiseChannel for KKChannel {
 }
 
 /// A cyphertext encrypted with [encrypt_message]
-pub struct NoiseEncryptedMessage(pub Vec<u8>);
+pub struct NoiseEncryptedMessage(Vec<u8>);
 
 /// Use the channel to encrypt any given message. Pre-fixes the message with
 /// (big-endian) length field and pads the message with 0s before encryption.
@@ -335,17 +346,9 @@ pub fn encrypt_message(
 ) -> Result<NoiseEncryptedMessage, Error> {
     let mut output = vec![0u8; NOISE_MESSAGE_MAX_SIZE];
 
-    // Pad message
-    // FIXME: padding is huge
-    let mut message_body = Vec::new();
-    message_body.extend_from_slice(message);
-    while message_body.len() < NOISE_PADDED_MESSAGE_SIZE {
-        message_body.extend_from_slice(&[0u8; 1]);
-    }
-
     // Prefix
     let message_len: usize = MAC_SIZE + message.len();
-    if message_len > NOISE_MESSAGE_MAX_SIZE {
+    if message_len > NOISE_MESSAGE_MAX_SIZE - NOISE_MESSAGE_HEADER_SIZE {
         return Err(Error::Noise(format!("Message is too large to encrypt")));
     }
     let length_prefix: [u8; LENGTH_PREFIX_SIZE] = message_len.to_be_bytes();
@@ -353,6 +356,11 @@ pub fn encrypt_message(
         .transport_state()
         .write_message(&length_prefix, &mut output[..NOISE_MESSAGE_HEADER_SIZE])
         .map_err(|e| Error::Noise(format!("Header encryption failed: {:?}", e)))?;
+
+    // Pad message
+    // FIXME: padding is huge
+    let mut message_body = [0u8; NOISE_PADDED_MESSAGE_SIZE];
+    message_body[..message.len()].copy_from_slice(message);
 
     // Encrypt message
     let ciphertext_len = channel
@@ -389,22 +397,20 @@ pub fn decrypt_message(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use snow::{params::NoiseParams, Keypair};
+pub mod tests {
+    use crate::noise::{
+        decrypt_message, encrypt_message, KKChannel, KKHandshakeActOne, KKHandshakeActTwo,
+        KKMessageActOne, KKMessageActTwo, KXChannel, KXHandshakeActOne, KXHandshakeActTwo,
+        KXMessageActOne, NoisePrivKey, NoisePubKey, KK_MSG_1_SIZE, KK_MSG_2_SIZE, KX_MSG_1_SIZE,
+        NOISE_MESSAGE_HEADER_SIZE, NOISE_MESSAGE_MAX_SIZE, NOISE_PADDED_MESSAGE_SIZE,
+    };
+    use crate::test_utils::{generate_keypair, get_noise_params, HandshakeChoice};
     use std::convert::TryInto;
-
-    /// Revault must specify the SodiumResolver to use sodiumoxide as the cryptography provider
-    /// when generating a static key pair for secure communication.
-    pub fn generate_keypair(noise_params: NoiseParams) -> Keypair {
-        Builder::with_resolver(noise_params, Box::new(SodiumResolver::default()))
-            .generate_keypair()
-            .unwrap()
-    }
 
     #[test]
     fn test_kx_handshake_encrypted_transport() {
-        let noise_params: NoiseParams = "Noise_KK_25519_ChaChaPoly_SHA256".parse().unwrap();
+        let hs_choice = HandshakeChoice::Kx;
+        let noise_params = get_noise_params(&hs_choice).unwrap();
 
         // key gen
         let initiator_keypair = generate_keypair(noise_params.clone());
@@ -413,7 +419,6 @@ mod tests {
 
         let responder_keypair = generate_keypair(noise_params);
         let responder_privkey = NoisePrivKey(responder_keypair.private[..].try_into().unwrap());
-        let responder_pubkey = NoisePubKey(responder_keypair.public[..].try_into().unwrap());
 
         // client
         let (cli_act_1, msg_1) = KXHandshakeActOne::initiator(&initiator_privkey).unwrap();
@@ -443,7 +448,8 @@ mod tests {
 
     #[test]
     fn test_kk_handshake_encrypted_transport() {
-        let noise_params: NoiseParams = "Noise_KK_25519_ChaChaPoly_SHA256".parse().unwrap();
+        let hs_choice = HandshakeChoice::Kk;
+        let noise_params = get_noise_params(&hs_choice).unwrap();
 
         // key gen
         let initiator_keypair = generate_keypair(noise_params.clone());
@@ -481,8 +487,46 @@ mod tests {
         assert_eq!(msg.to_vec(), decrypted_msg);
     }
 
+    #[test]
     fn test_message_size_limit_and_padding() {
-        let noise_params: NoiseParams = "Noise_KK_25519_ChaChaPoly_SHA256".parse().unwrap();
+        let hs_choice = HandshakeChoice::Kx;
+        let noise_params = get_noise_params(&hs_choice).unwrap();
+
+        // key gen
+        let initiator_keypair = generate_keypair(noise_params.clone());
+        let initiator_privkey = NoisePrivKey(initiator_keypair.private[..].try_into().unwrap());
+        let initiator_pubkey = NoisePubKey(initiator_keypair.public[..].try_into().unwrap());
+
+        let responder_keypair = generate_keypair(noise_params);
+        let responder_privkey = NoisePrivKey(responder_keypair.private[..].try_into().unwrap());
+
+        // client
+        let (_cli_act_1, msg_1) = KXHandshakeActOne::initiator(&initiator_privkey).unwrap();
+
+        // server
+        let serv_act_1 =
+            KXHandshakeActOne::responder(&responder_privkey, &initiator_pubkey, &msg_1).unwrap();
+        let (serv_act_2, _msg_2) = KXHandshakeActTwo::responder(serv_act_1).unwrap();
+        let mut server_channel = KXChannel::from_handshake(serv_act_2).unwrap();
+
+        // Fail if msg too large
+        let msg = [0u8; NOISE_MESSAGE_MAX_SIZE - NOISE_MESSAGE_HEADER_SIZE + 1];
+        assert!(encrypt_message(&mut server_channel, &msg).is_err());
+
+        // Test if padding hides message size
+        let msg_a = "".as_bytes();
+        let ciphertext_a = encrypt_message(&mut server_channel, &msg_a).unwrap();
+
+        let msg_b = [0u8; NOISE_PADDED_MESSAGE_SIZE];
+        let ciphertext_b = encrypt_message(&mut server_channel, &msg_b).unwrap();
+
+        assert_eq!(ciphertext_a.0.len(), ciphertext_b.0.len());
+    }
+
+    #[test]
+    fn test_bad_messages() {
+        let hs_choice = HandshakeChoice::Kk;
+        let noise_params = get_noise_params(&hs_choice).unwrap();
 
         // key gen
         let initiator_keypair = generate_keypair(noise_params.clone());
@@ -493,26 +537,42 @@ mod tests {
         let responder_privkey = NoisePrivKey(responder_keypair.private[..].try_into().unwrap());
         let responder_pubkey = NoisePubKey(responder_keypair.public[..].try_into().unwrap());
 
-        // client
-        let (cli_act_1, msg_1) = KXHandshakeActOne::initiator(&initiator_privkey).unwrap();
+        // KK handshake fails if messages are badly formed.
+        // Without a valid cli_act_2 nor serv_act_2, no KKChannel can be constructed.
+        let (cli_act_1, _msg_1) =
+            KKHandshakeActOne::initiator(&initiator_privkey, &responder_pubkey).unwrap();
 
-        // server
+        let bad_msg = KKMessageActOne([1u8; KK_MSG_1_SIZE]);
         let serv_act_1 =
-            KXHandshakeActOne::responder(&responder_privkey, &initiator_pubkey, &msg_1).unwrap();
-        let (serv_act_2, msg_2) = KXHandshakeActTwo::responder(serv_act_1).unwrap();
-        let mut server_channel = KXChannel::from_handshake(serv_act_2).unwrap();
+            KKHandshakeActOne::responder(&responder_privkey, &initiator_pubkey, &bad_msg);
+        assert!(serv_act_1.is_err());
 
-        // Fail if msg too large
-        let msg = [0u8; NOISE_MESSAGE_MAX_SIZE + 1];
-        assert!(encrypt_message(&mut server_channel, &msg).is_err());
+        let bad_msg = KKMessageActTwo([1u8; KK_MSG_2_SIZE]);
+        let cli_act_2 = KKHandshakeActTwo::initiator(cli_act_1, &bad_msg);
+        assert!(cli_act_2.is_err());
 
-        // Test if padding hides message size
-        let msg_a = "".as_bytes();
-        let ciphertext_a = encrypt_message(&mut server_channel, &msg_a).unwrap();
+        // KX handshake fails on client side if messages are badly formed,
+        // but succeeds on server side. However, there's no chance for
+        // client to decrypt messages encrypted by server.
+        let (cli_act_1, _msg_1) = KXHandshakeActOne::initiator(&initiator_privkey).unwrap();
 
-        let msg_b = [0u8; NOISE_MESSAGE_MAX_SIZE];
-        let ciphertext_b = encrypt_message(&mut server_channel, &msg_b).unwrap();
+        // Responder doesn't fail act 1 on a bad message..
+        let bad_msg = KXMessageActOne([1u8; KX_MSG_1_SIZE]);
+        let serv_act_1 =
+            KXHandshakeActOne::responder(&responder_privkey, &initiator_pubkey, &bad_msg);
+        assert!(serv_act_1.is_ok());
+        let (serv_act_2, msg_2) = KXHandshakeActTwo::responder(serv_act_1.unwrap()).unwrap();
+        // Responder can construct a KXChannel from a bad message..
+        let server_channel = KXChannel::from_handshake(serv_act_2);
+        assert!(server_channel.is_ok());
+        let plaintext = "".as_bytes();
+        // Responder can successfully encrypt messages..
+        let ciphertext = encrypt_message(&mut server_channel.unwrap(), &plaintext);
+        assert!(ciphertext.is_ok());
 
-        assert_eq!(ciphertext_a.0.len(), ciphertext_b.0.len());
+        // Client fails to read msg_2 as it is derived from bad_msg
+        let cli_act_2 = KXHandshakeActTwo::initiator(cli_act_1, &msg_2);
+        assert!(cli_act_2.is_err());
+        // Client can't decrypt messages from responder since the KXChannel can't be established
     }
 }
